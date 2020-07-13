@@ -16,73 +16,61 @@ library(directlabels)
 all_data <- fread("https://open-covid-19.github.io/data/v2/master.csv")
 
 all_data <- fread("https://storage.googleapis.com/covid19-open-data/v2/main.csv")
+all_epi  <- fread("https://storage.googleapis.com/covid19-open-data/v2/epidemiology.csv")
+all_hospi <- fread("https://storage.googleapis.com/covid19-open-data/v2/hospitalizations.csv") 
+all_age  <- fread("https://storage.googleapis.com/covid19-open-data/v2/by-age.csv")
 
-all_data %>%
-  mutate(day = as.Date(date, format= "%Y-%m-%d")) %>%
-  filter(subregion1_code=="LIM") %>%
-  arrange(day) %>%
+all_hospi %>%
+  filter(key=="US_CA") %>%
   as.data.table()
 
+all_age %>%
+  filter(grepl("US", key)) %>%
+  distinct(key) %>%
+  as.data.table()
 
 prep_data <- all_data %>%
   mutate(day = as.Date(date, format= "%Y-%m-%d"), 
          country_name=replace(country_name, country_name=="United States of America", "US")) %>%
-  filter(subregion1_name=="" & subregion2_name=="", aggregation_level==0) %>%
-  distinct(key, country_name, day, new_confirmed, new_deceased, total_confirmed, total_deceased,
+  distinct(key, country_name, subregion1_name, subregion2_name,
+           day, new_confirmed, new_deceased, total_confirmed, total_deceased,
            new_tested, total_tested,
            population, population_density, population_male, population_female,
            human_development_index, diabetes_prevalence, smoking_prevalence, comorbidity_mortality_rate, health_expenditure
   ) %>%
   
-  # Get daily smoothed cases, deaths over 7 days
-  arrange(country_name, day) %>%
-  group_by(country_name) %>%
+  # Clean up (negatives..)
+  mutate(new_deceased = replace(new_deceased, new_deceased<0, 0)) %>%
+  
+  # Get daily smoothed cases, deaths and tests over 7 days
+  arrange(country_name, subregion1_name, subregion2_name,  day) %>%
+  group_by(country_name, subregion1_name, subregion2_name) %>%
   mutate(s_new_confirmed = roll_mean(new_confirmed, n=7, align = "right", fill = NA),
-         s_new_deceased = roll_mean(new_deceased, n=7, align="right", fill=NA)) %>%
+         s_new_deceased = roll_mean(new_deceased, n=7, align="right", fill=NA),
+         s_new_tested = roll_mean(new_tested, n=7, align="right", fill=NA),
+         trend14 = (s_new_confirmed - lag(s_new_confirmed, n = 14, default = NA)) / lag(s_new_confirmed, n = 14, default = NA)) %>%
   
   # Binarize Developed status by HDI
   mutate(Developed = human_development_index>0.846) %>%
-  
+    
   # Get incidence
   mutate(new_case_inc = s_new_confirmed/population, new_death_inc = s_new_deceased/population) %>%
+  arrange(country_name, subregion1_name, subregion2_name,  day) %>%
+  group_by(country_name, subregion1_name, subregion2_name) %>%
+  mutate(inc_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA)/population,
+         case_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA),
+         test_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA) / roll_sum(s_new_tested, n=14, align="right", fill=NA)) %>%
   as.data.table()
 
 
-prep_data_l1 <- all_data %>%
-  mutate(day = as.Date(date, format= "%Y-%m-%d"), 
-         country_name=replace(country_name, country_name=="United States of America", "US")) %>%
-  filter(aggregation_level==1) %>%
-  distinct(key, country_name, subregion1_code, subregion1_name,
-           day, new_confirmed, new_deceased, total_confirmed, total_deceased, 
-           new_tested, total_tested,
-           population
-  ) %>%
-  
-  # Filter out negative value
-  mutate(new_deceased = replace(new_deceased, new_deceased<0, 0)) %>%
-  
-  # Get daily smoothed cases, deaths over 7 days
-  arrange(country_name, subregion1_code, day) %>%
-  group_by(country_name, subregion1_code) %>%
-  mutate(s_new_confirmed = roll_mean(new_confirmed, n=7, align = "right", fill = NA),
-         s_new_deceased = roll_mean(new_deceased, n=7, align="right", fill=NA)) %>%
-  
-  # Get incidence
-  mutate(new_case_inc = s_new_confirmed/population, new_death_inc = s_new_deceased/population) %>%
-  as.data.table()
-
-function_plot_region <-  function(x, country, level_1=""){
+function_plot_region <-  function(x, country, level_1="", level_2=""){
   
   x <- x %>%
     filter(day>"2020-03-01") %>%
     filter(country_name==country) %>%
+    filter(subregion1_name==level_1) %>%
+    filter(subregion2_name==level_2) %>%
     as.data.table()
-  
-  if (level_1!=""){
-    x <- x %>%
-      filter(subregion1_name==level_1) %>%
-      as.data.table()
-  }
   
   bars  <- x %>%
     mutate(new_deceased = new_deceased*10) %>%
@@ -95,7 +83,7 @@ function_plot_region <-  function(x, country, level_1=""){
     distinct(day, s_new_confirmed, s_new_deceased) %>%
     melt(id.vars=c("day")) %>%
     as.data.table()
-  
+
   p <- ggplot() +
     geom_bar(data=bars, aes(day, value, fill=variable), stat="identity", position="dodge", alpha=0.7) +
     
@@ -119,98 +107,165 @@ function_plot_region <-  function(x, country, level_1=""){
 }
 
 function_plot_region(prep_data, "US")
-function_plot_region(prep_data_l1, "US", "California")
-function_plot_region(prep_data_l1, "Peru", "Lima")
+function_plot_region(prep_data, "US", "Arizona")
+function_plot_region(prep_data, "Peru", "Lima")
+function_plot_region(prep_data, "US", "California", "Los Angeles County")
 
-prep_data_l1 %>%
-  filter(country_name=="US") %>%
-  filter(subregion1_name=="Nevada") %>%
-  mutate(trend_14_day_perc =  ((s_new_confirmed / lag(s_new_confirmed, n = 13)) - 1)*100 ) %>%
-  filter(day>"2020-06-23") %>%
-  as.data.table()
-
-
-
-
-p <- prep_data %>%
-  filter(total_confirmed>5000 & day>"2020-03-14") %>%
-  arrange(country_name, day) %>%
-  mutate(day = as.numeric(day - as.Date("2020-03-14"))) %>%
-  as.data.table() %>%
+function_select_top_region <- function(x, global=T, country="US", choice="cases", n=10, pop_th=0){
+  # choice: "cases", "incidence", "test_ratio"
+  x <- x %>%
+    filter(population > pop_th) %>%
+    filter(day == last(day)) %>%
+    as.data.table()
   
-  ggplot(aes(new_case_inc, new_death_inc, color=Developed, 
-             frame=day, size=population_density, label=country_name)) +
-    geom_point() +
-    geom_abline(slope = 0.01, intercept = 0, linetype="dashed", color="red") +
-    # scale_color_viridis_c() +
-    scale_color_discrete()
-    # theme_wsj()
-ggplotly(p)
-
-
-p <- prep_data %>%
-  filter(!is.na(Developed)) %>%
-  filter(total_confirmed>=100) %>%
-  arrange(country_name, day) %>%
-  group_by(country_name) %>%
-  mutate(day_since_100 = seq(1:length(key)), 
-         max_cases = max(total_confirmed),
-         max_day_since_100 = max(day_since_100)
-         ) %>%
-  mutate(core = country_name %in% c("Peru", "Brazil", "South Africa", "Chile", "Mexico", "US", "Russia")) %>%
-  filter(max_cases>20000) %>%
-  as.data.table() %>%
+  if (global==T){
+    regions <- x %>%
+      filter(subregion1_name=="" & subregion2_name=="") %>%
+      mutate(region = country_name) %>%
+      as.data.table()
+  } else {
+    regions <- x %>%
+      filter(country_name==country & subregion1_name!="", subregion2_name=="") %>%
+      mutate(region = subregion1_name) %>%
+      as.data.table()
+  }
   
-  ggplot(aes(day_since_100, s_new_confirmed, shape=core, group=country_name, color=Developed)) +
-    geom_line() + 
-    geom_text(aes(day_since_100, s_new_confirmed,
-                        label=ifelse((day_since_100==max_day_since_100 & core==T), country_name, ""))) +
-    scale_color_economist() +
-    theme_minimal() +
-    theme(axis.title=element_text(size=16)) +
-    xlab("Days since 100 cases") + ylab("New Cases") #+
-    # theme(legend.title=element_blank(),
-    #       panel.grid.major.x=element_blank())
-gp <- ggplotly(p) 
-gp$x$data[[2]]$showlegend <-F
-gp$x$data[[3]]$showlegend <-F
-gp$x$data[[1]]$showlegend <-F
-gp$x$data[[4]]$showlegend <-T
-gp$x$data[[5]]$showlegend <-T
-gp$x$data[[8]]$showlegend <-F
-gp$x$data[[11]]$showlegend <-F
-for (i in 1:11){
-  print(c(i, gp$x$data[[i]]$legend, gp$x$data[[i]]$showlegend))
-  gp$x$data[[i]]$showlegend <- T
+  # Choose sorting criteria
+  if (choice=="cases"){
+    regions <- regions %>%      
+      arrange(-case_14_day) 
+  } else if (choice=="incidence"){
+    regions <- regions %>%      
+      arrange(-inc_14_day) 
+  } else if (choice=="test_ratio"){
+    regions <- regions %>%
+      arrange(-test_14_day)
+  } else if (choice=="trend"){
+    regions <- regions %>%
+      arrange(-trend14)
+  }
+  regions <- regions %>% pull(region)
+   
+  
+  return(regions[1:n])
 }
 
-gp %>%
-  layout(annotations= list(yref='paper',xref="paper",y=1.05,x=1.1, text="Developed",showarrow=F))
+function_select_top_region(prep_data, global = F, country="US", choice = "trend", pop_th = 5e6)
 
+function_select_top_region(prep_data, global = F, country = "US", n=11,
+                           choice = "incidence", pop_th = 5e6)
 
-p<-prep_data %>%
-  filter(!is.na(Developed)) %>%
-  filter(total_confirmed>=100) %>%
-  arrange(country_name, day) %>%
-  group_by(country_name) %>%
-  mutate(day_since_100 = seq(1:length(key)), 
-         max_cases = max(total_confirmed),
-         max_day_since_100 = max(day_since_100)
-  ) %>%
-  mutate(core = country_name %in% c("Peru", "Brazil", "South Africa", "Chile", "Mexico", "US", "Russia")) %>%
-  filter(max_cases>20000) %>%
-  as.data.table()
+function_plot_case_inc <- function(x, countries=c("US"), level_1=c(""), level_2=c(""), incidence=F){
   
-plot_ly(p, x=~day_since_100) %>%
-  add_trace(y=~s_new_confirmed, color=~Developed, split=~country_name, data=p[core==T], 
-              name="Core", alpha=1, type="scatter", mode = 'lines+markers', colors="Dark2",
-            text = ~paste("Country: ", country_name), showlegend=T, legendgroup="Core") %>%
-  add_trace(y=~s_new_confirmed, color=~Developed, split=~country_name, data=p[core==F], 
-              name="Others", alpha=0.2, type="scatter", mode = 'lines+markers', colors="Dark2", 
-            text=~country_name, showlegend=T, legendgroup="Others") %>%
-  layout(
-    showlegend = F
-  )
+  # Prep data
+  x <- x %>%
+    filter(day>"2020-03-01") %>%
+    filter(country_name %in% countries) %>%
+    filter(subregion1_name %in% level_1) %>%
+    filter(subregion2_name %in% level_2) %>%
+    mutate(region = paste0(country_name, " - ", subregion1_name, " - ", subregion2_name)) %>%
+    mutate(incidence=incidence) %>%
+    mutate(numbers = ifelse(incidence ==T, round(new_case_inc*1e5,2), s_new_confirmed)) %>%
+    as.data.table()
+  
+  y_label <- ifelse(incidence ==T, "Cases per 100K", "Cases")
+  
+  p <- x %>%
+    ggplot(aes(day, numbers, colour=region)) +
+    geom_line(size=1.1) +
+    
+    theme_minimal() +
+    # scale_colour_brewer("Region", palette = "Set2") +
+    scale_color_tableau() +
+    labs(color="Region") +
+    theme(axis.title=element_text(size=16), axis.text = element_text(size=13),
+          legend.title = element_text(size=14), legend.text=element_text(size=12)) +
+    xlab("Date") + ylab(y_label)
+  
+  ggplotly(p)
+}
+
+function_plot_case_inc(prep_data, 
+                       countries=c("US"),
+                       level_1 = function_select_top_region(prep_data, global = F, country = "US", n=7,
+                                                            choice = "trend", pop_th = 5e4),
+                       incidence = T
+                       )
+
+function_plot_test <- function(x, countries=c(""), level_1=c(""), level_2=c("")){
+  
+  # Prep data
+  x <- x %>%
+    filter(day>"2020-03-01") %>%
+    filter(country_name %in% countries) %>%
+    filter(subregion1_name %in% level_1) %>%
+    filter(subregion2_name %in% level_2) %>%
+    mutate(region = paste0(country_name, " - ", subregion1_name, " - ", subregion2_name)) %>%
+    mutate(test_prop = s_new_confirmed/s_new_tested) %>%
+    as.data.table()
+  
+  # Plot
+  p <- x %>%
+    ggplot(aes(day, test_prop, colour=region)) +
+    geom_line(size=1.2) +
+    
+    theme_minimal() +
+    scale_colour_brewer("Region", palette = "Set1") +
+    theme(axis.title=element_text(size=16), axis.text = element_text(size=13),
+          legend.title = element_text(size=14), legend.text=element_text(size=12)) +
+    xlab("Date") + ylab("Positive/Tests")
+  
+  ggplotly(p)
+}
+
+
+function_plot_test(prep_data, countries = c("US", "Denmark", "Colombia", "Italy"), 
+                   level_1 = c("California", "Arizona", "Florida"))
+
+function_plot_trend <- function(x, countries=c(""), level_1=c(""), level_2=c("")){
+  
+  require(wesanderson)
+  # Prep data
+  x <- x %>%
+    filter(day>"2020-03-01") %>%
+    filter(country_name %in% countries) %>%
+    filter(subregion1_name %in% level_1) %>%
+    filter(subregion2_name %in% level_2) %>%
+    mutate(region = paste0(country_name, " - ", subregion1_name, " - ", subregion2_name)) %>%
+    group_by(region) %>%
+    mutate(last_trend14 = last(trend14)) %>%
+    as.data.table()
+  
+  # Plot
+  x$region <- factor(x$region, 
+                     levels = x %>% distinct(region, last_trend14) %>% arrange(-last_trend14) %>% pull(region)
+                     )
+  
+  p <- x %>%
+    ggplot(aes(day, s_new_confirmed, colour=round(last_trend14,2))) +
+    geom_line(size=1.2) +
+    facet_wrap(~region, scales="free_y", ncol = 1) +
+    
+    theme_minimal() +
+    # scale_colour_gradientn(colours = wes_palette("Zissou1", 100, type = "continuous")) +
+    scale_color_gradient2("Trend (%)", midpoint = 0.3, low="darkgreen", mid="yellow", high = "red", space = "Lab") +
+    theme(axis.title=element_text(size=14), axis.text = element_text(size=12),
+          legend.title = element_text(size=14), legend.text=element_text(size=12),
+          strip.text.x = element_text(size = 14)) +
+    xlab("Date") + ylab("New Cases")
+  
+  ggplotly(p)
+}
+
+function_plot_trend(prep_data, countries = c("US", "Denmark", "Colombia", "Italy"), 
+                   level_1 = c("California", "Arizona", "Florida", "Louisiana", "New York", "New Jersey"))
+
+
+prep_data %>%
+  filter(subregion1_name=="California") %>%
+  as.data.table()
+
+
 
 
 ##################################################### APP ############################################
@@ -234,13 +289,28 @@ ui <- dashboardPage(
       # First tab content
       tabItem(tabName = "insights",
               fluidRow(
-                box(
-                  sliderInput("slider_date", "Date choices:", 
-                              as.Date("2020-03-16"), max(prep_data$day), as.Date("2020-03-16"), animate=T)
+                tabBox(
+                  title = "Historical data",
+                  id = "historical_tab",
+                  
+                  tabPanel(
+                    title="Global Incidence",
+                    selectInput("input_case_inc_g", "Display:", choices=c("Cases", "Incidence")),
+                    plotlyOutput("country_incidence")
+                    ),
+                  
+                  tabPanel(
+                    title="US State Incidence",
+                    selectInput("input_case_inc_s", "Display:", choices=c("Cases", "Incidence")),
+                    plotlyOutput("us_state_incidence")
                   )
-                ),
+                  
+                )
+              ),
               fluidRow(
-                box(plotlyOutput("main_plot", height = 500)),
+                box(
+                  h2("Place holder")
+                  ),
                 )
               ),
       
@@ -254,20 +324,23 @@ ui <- dashboardPage(
 
 server <- function(input, output) {
   
-  output$main_plot <- renderPlotly({
-    data <- prep_data %>% 
-      filter(!is.na(new_case_inc)) %>%
-      filter(!is.na(new_death_inc)) %>%
-      filter(day>"2020-02-15") %>% 
-      filter(day==input$slider_date) %>%
-    p <- ggplot(data, aes(new_case_inc, new_death_inc, 
-                          color=human_development_index, size=population_density, ids=country_name)
-           ) +
-      geom_point() +
-      xlim(0, max(prep_data[!is.na(new_case_inc)]$new_case_inc)) +
-      ylim(0, max(prep_data[!is.na(new_death_inc)]$new_death_inc))
-    ggplotly(p)
+  output$country_incidence <- renderPlotly({
+    function_plot_case_inc(prep_data, 
+                           countries = function_select_top_region(prep_data, global = T, n=7,
+                                                                choice = "incidence", pop_th = 5e6),
+                           incidence = (input$input_case_inc_g=="Incidence")
+    )
+  })
+  
+  output$us_state_incidence <- renderPlotly({
+    function_plot_case_inc(prep_data, 
+                           countries=c("US"),
+                           level_1 = function_select_top_region(prep_data, global = F, country = "US", n=7,
+                                                                choice = "incidence", pop_th = 5e6),
+                           incidence = (input$input_case_inc_s=="Incidence")
+    )
   })
 }
 
 shinyApp(ui, server)
+
