@@ -112,7 +112,7 @@ function_plot_region(prep_data, "Peru", "Lima")
 function_plot_region(prep_data, "US", "California", "Los Angeles County")
 
 function_select_top_region <- function(x, global=T, country="US", choice="cases", n=10, pop_th=0){
-  # choice: "cases", "incidence", "test_ratio"
+  # choice: "cases", "incidence", "test_ratio", "trend"
   x <- x %>%
     filter(population > pop_th) %>%
     filter(day == last(day)) %>%
@@ -292,16 +292,29 @@ ui <- dashboardPage(
                 tabBox(
                   title = "Historical data",
                   id = "historical_tab",
+                  width=12,
                   
                   tabPanel(
                     title="Global Incidence",
-                    selectInput("input_case_inc_g", "Display:", choices=c("Cases", "Incidence")),
+                    fluidRow(
+                      column(5,
+                        selectInput("input_case_inc_g", "Display:", choices=c("Cases", "Incidence"))
+                        ),
+                      column(5,
+                        selectInput("input_case_inc_rank_g", "Region selected by:", 
+                                    choices= c("Highest cases"="cases", "Highest incidence"="incidence", 
+                                               "Percent of tested"="test_ratio", "14-Day trend" = "trend"))
+                        )
+                      ),
                     plotlyOutput("country_incidence")
                     ),
                   
                   tabPanel(
                     title="US State Incidence",
                     selectInput("input_case_inc_s", "Display:", choices=c("Cases", "Incidence")),
+                    selectInput("input_case_inc_rank_s", "Region selected by:", 
+                                choices= c("Highest cases"="cases", "Highest incidence"="incidence", 
+                                           "Percent of tested"="test_ratio", "14-Day trend" = "trend")),
                     plotlyOutput("us_state_incidence")
                   )
                   
@@ -327,7 +340,7 @@ server <- function(input, output) {
   output$country_incidence <- renderPlotly({
     function_plot_case_inc(prep_data, 
                            countries = function_select_top_region(prep_data, global = T, n=7,
-                                                                choice = "incidence", pop_th = 5e6),
+                                                                choice = input$input_case_inc_rank_g, pop_th = 5e6),
                            incidence = (input$input_case_inc_g=="Incidence")
     )
   })
@@ -336,7 +349,7 @@ server <- function(input, output) {
     function_plot_case_inc(prep_data, 
                            countries=c("US"),
                            level_1 = function_select_top_region(prep_data, global = F, country = "US", n=7,
-                                                                choice = "incidence", pop_th = 5e6),
+                                                                choice = input$input_case_inc_rank_s, pop_th = 5e6),
                            incidence = (input$input_case_inc_s=="Incidence")
     )
   })
