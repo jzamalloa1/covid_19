@@ -5,6 +5,7 @@ library(plotly)
 library(shiny)
 library(shinythemes)
 library(shinydashboard)
+library(shinydashboardPlus)
 library(dplyr)
 library(gganimate)
 library(RcppRoll)
@@ -12,6 +13,7 @@ library(ggthemes)
 library(ggrepel)
 library(zoo)
 library(directlabels)
+library(ggthemes)
 
 all_data <- fread("https://open-covid-19.github.io/data/v2/master.csv")
 
@@ -20,19 +22,13 @@ all_epi  <- fread("https://storage.googleapis.com/covid19-open-data/v2/epidemiol
 all_hospi <- fread("https://storage.googleapis.com/covid19-open-data/v2/hospitalizations.csv") 
 all_age  <- fread("https://storage.googleapis.com/covid19-open-data/v2/by-age.csv")
 
-all_hospi %>%
-  filter(key=="US_CA") %>%
-  as.data.table()
-
-all_age %>%
-  filter(grepl("US", key)) %>%
-  distinct(key) %>%
-  as.data.table()
+all_data
 
 prep_data <- all_data %>%
+  filter(total_confirmed>10) %>%
   mutate(day = as.Date(date, format= "%Y-%m-%d"), 
          country_name=replace(country_name, country_name=="United States of America", "US")) %>%
-  distinct(key, country_name, subregion1_name, subregion2_name,
+  distinct(key, country_name, subregion1_name, subregion2_name, locality_name,
            day, new_confirmed, new_deceased, total_confirmed, total_deceased,
            new_tested, total_tested,
            population, population_density, population_male, population_female,
@@ -41,26 +37,77 @@ prep_data <- all_data %>%
   
   # Clean up (negatives..)
   mutate(new_deceased = replace(new_deceased, new_deceased<0, 0)) %>%
+  mutate(new_confirmed = replace(new_confirmed, new_confirmed<0, 0)) %>%
   
   # Get daily smoothed cases, deaths and tests over 7 days
-  arrange(country_name, subregion1_name, subregion2_name,  day) %>%
-  group_by(country_name, subregion1_name, subregion2_name) %>%
-  mutate(s_new_confirmed = roll_mean(new_confirmed, n=7, align = "right", fill = NA),
-         s_new_deceased = roll_mean(new_deceased, n=7, align="right", fill=NA),
+  arrange(country_name, subregion1_name, subregion2_name, locality_name, day) %>%
+  group_by(country_name, subregion1_name, subregion2_name, locality_name) %>%
+  mutate(s_new_confirmed = roll_mean(new_confirmed, n=7, align = "right", fill = 0, na.rm = T),
+         s_new_deceased = roll_mean(new_deceased, n=7, align="right", fill=0, na.rm = T),
          s_new_tested = roll_mean(new_tested, n=7, align="right", fill=NA),
-         trend14 = (s_new_confirmed - lag(s_new_confirmed, n = 14, default = NA)) / lag(s_new_confirmed, n = 14, default = NA)) %>%
+         trend14 = (s_new_confirmed - lag(s_new_confirmed, n = 14, default = NA)) / lag(s_new_confirmed, n = 14, default = NA),
+         std_confirmed = (s_new_confirmed - min(s_new_confirmed)) /(max(s_new_confirmed) - min(s_new_confirmed)) ) %>%
   
   # Binarize Developed status by HDI
   mutate(Developed = human_development_index>0.846) %>%
     
   # Get incidence
   mutate(new_case_inc = s_new_confirmed/population, new_death_inc = s_new_deceased/population) %>%
-  arrange(country_name, subregion1_name, subregion2_name,  day) %>%
-  group_by(country_name, subregion1_name, subregion2_name) %>%
-  mutate(inc_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA)/population,
-         case_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA),
+  arrange(country_name, subregion1_name, subregion2_name, locality_name,  day) %>%
+  group_by(country_name, subregion1_name, subregion2_name, locality_name) %>%
+  mutate(inc_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA, na.rm = T)/population,
+         case_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA, na.rm = T),
          test_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA) / roll_sum(s_new_tested, n=14, align="right", fill=NA)) %>%
   as.data.table()
+
+
+prep_data
+function_plot_std <- function(x, x_target, today){
+  
+  x <- merge(x, x_target, by=c("country_name", "subregion1_name", "subregion2_name", "locality_name")) %>%
+    mutate(label = paste0(country_name, "-", subregion1_name, "-", subregion2_name, "-", locality_name)) %>%
+    filter(day < today) %>%
+    
+    # Get latest incidence value to sort facets by
+    arrange(country_name, subregion1_name, subregion2_name, locality_name, day) %>%
+    group_by(country_name, subregion1_name, subregion2_name, locality_name) %>%
+    mutate(latest_value = last(inc_14_day)) %>%
+    as.data.table()
+  
+  # PLOT
+  p <- x %>%
+    mutate(label = reorder(label, -latest_value)) %>%
+    
+    ggplot(aes(x=day, y=std_confirmed, fill=std_confirmed)) +
+    geom_histogram(stat="identity") +
+    facet_grid(rows = vars(label)) +
+    theme_bw() +
+    theme(panel.spacing.y=unit(-0.5, "lines"),
+          panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+          strip.text.y = element_text(size=10, color="black",  angle=0),
+          strip.background.y = element_rect(color="white", fill="white"),
+          axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
+    scale_fill_gradient2(low = "seagreen3", mid = "khaki1", high="firebrick3", midpoint = 0.5)
+  
+  return(p)
+}
+
+target_table <- as.data.table(
+  rbind(c("US", rep("",3)),
+        c("Italy", rep("",3)),
+        c("Peru", rep("",3)),
+        c("Spain", rep("",3)),
+        c("US", "California", rep("",2)),
+        c("US", "New York", rep("",2)),
+        c("Peru", "Lima", rep("",2)),
+        c("Peru", "Arequipa", rep("",2))
+  ),
+) %>%
+  rename(country_name="V1", subregion1_name="V2", subregion2_name="V3", locality_name="V4")
+
+function_plot_std(prep_data, target_table,
+                  today = "2020-07-19"
+                  )
 
 
 function_plot_region <-  function(x, country, level_1="", level_2=""){
@@ -106,7 +153,8 @@ function_plot_region <-  function(x, country, level_1="", level_2=""){
   return(p)
 }
 
-function_plot_region(prep_data, "US")
+function_plot_region(prep_data, "Spain")
+function_plot_region(prep_data, "Peru")
 function_plot_region(prep_data, "US", "Arizona")
 function_plot_region(prep_data, "Peru", "Lima")
 function_plot_region(prep_data, "US", "California", "Los Angeles County")
@@ -296,25 +344,44 @@ ui <- dashboardPage(
                   
                   tabPanel(
                     title="Global Incidence",
-                    fluidRow(
-                      column(5,
-                        selectInput("input_case_inc_g", "Display:", choices=c("Cases", "Incidence"))
+                    boxPlus(width = 8,
+                        fluidRow(
+                          column(3,
+                                 selectInput("input_case_inc_g", "Display:", choices=c("Cases", "Incidence"))
+                                 ),
+                          column(3,
+                                 selectInput("input_case_inc_rank_g", "Region selected by:", 
+                                        choices= c("Highest cases"="cases", "Highest incidence"="incidence", 
+                                                   "Percent of tested"="test_ratio", "14-Day trend" = "trend"))
+                                 ),
+                          column(3,
+                                 sliderInput("input_case_slider_pop_g", "Minimum population:", min=0,
+                                             max=20e6, value = 5e6, step = 1e6)
+                                 )
+                          ),
+                        plotlyOutput("country_incidence")
                         ),
-                      column(5,
-                        selectInput("input_case_inc_rank_g", "Region selected by:", 
-                                    choices= c("Highest cases"="cases", "Highest incidence"="incidence", 
-                                               "Percent of tested"="test_ratio", "14-Day trend" = "trend"))
+                    box(width = 4,
+                        function_plot_trend(prep_data, countries = c("US", "Denmark", "Colombia", "Italy"))
                         )
-                      ),
-                    plotlyOutput("country_incidence")
                     ),
                   
                   tabPanel(
                     title="US State Incidence",
-                    selectInput("input_case_inc_s", "Display:", choices=c("Cases", "Incidence")),
-                    selectInput("input_case_inc_rank_s", "Region selected by:", 
-                                choices= c("Highest cases"="cases", "Highest incidence"="incidence", 
-                                           "Percent of tested"="test_ratio", "14-Day trend" = "trend")),
+                    fluidRow(
+                      column(3,
+                             selectInput("input_case_inc_s", "Display:", choices=c("Cases", "Incidence"))
+                             ),
+                      column(3,
+                             selectInput("input_case_inc_rank_s", "Region selected by:", 
+                                    choices= c("Highest cases"="cases", "Highest incidence"="incidence", 
+                                               "Percent of tested"="test_ratio", "14-Day trend" = "trend"))
+                             ),
+                      column(3,
+                             sliderInput("input_case_slider_pop_s", "Minimum population:", min=0,
+                                         max=20e6, value = 5e6, step = 1e6)
+                             )
+                      ),
                     plotlyOutput("us_state_incidence")
                   )
                   
@@ -340,7 +407,8 @@ server <- function(input, output) {
   output$country_incidence <- renderPlotly({
     function_plot_case_inc(prep_data, 
                            countries = function_select_top_region(prep_data, global = T, n=7,
-                                                                choice = input$input_case_inc_rank_g, pop_th = 5e6),
+                                                                choice = input$input_case_inc_rank_g, 
+                                                                pop_th = input$input_case_slider_pop_g),
                            incidence = (input$input_case_inc_g=="Incidence")
     )
   })
@@ -349,7 +417,8 @@ server <- function(input, output) {
     function_plot_case_inc(prep_data, 
                            countries=c("US"),
                            level_1 = function_select_top_region(prep_data, global = F, country = "US", n=7,
-                                                                choice = input$input_case_inc_rank_s, pop_th = 5e6),
+                                                                choice = input$input_case_inc_rank_s, 
+                                                                pop_th = input$input_case_slider_pop_s),
                            incidence = (input$input_case_inc_s=="Incidence")
     )
   })
