@@ -14,6 +14,8 @@ library(ggrepel)
 library(zoo)
 library(directlabels)
 library(ggthemes)
+library(gridExtra)
+library(cowplot)
 
 all_data <- fread("https://open-covid-19.github.io/data/v2/master.csv")
 
@@ -21,8 +23,23 @@ all_data <- fread("https://storage.googleapis.com/covid19-open-data/v2/main.csv"
 all_epi  <- fread("https://storage.googleapis.com/covid19-open-data/v2/epidemiology.csv")
 all_hospi <- fread("https://storage.googleapis.com/covid19-open-data/v2/hospitalizations.csv") 
 all_age  <- fread("https://storage.googleapis.com/covid19-open-data/v2/by-age.csv")
+all_demo <- fread("https://storage.googleapis.com/covid19-open-data/v2/demographics.csv")
+all_geo  <- fread("https://storage.googleapis.com/covid19-open-data/v2/geography.csv")
+all_resp <- fread("https://storage.googleapis.com/covid19-open-data/v2/oxford-government-response.csv")
+all_bank <- fread("https://storage.googleapis.com/covid19-open-data/v2/worldbank.csv")
+all_health <- fread("https://storage.googleapis.com/covid19-open-data/v2/health.csv")
 
-all_data
+all_geo %>% filter(key=="US_CA") #area
+all_demo %>% filter(key=="US_CA") #pop older
+
+all_demo_age <- all_demo %>%
+  group_by(key) %>%
+  summarise(pop_young = sum(c(population_age_00_09, population_age_10_19), na.rm = T)/population,
+            pop_mid = sum(c(population_age_20_29, population_age_30_39, population_age_40_49, population_age_50_59), na.rm = T)/population,
+            pop_old = sum(c(population_age_60_69, population_age_70_79, population_age_80_89, population_age_90_99), na.rm = T)/population
+            ) %>%
+  as.data.table()
+
 
 prep_data <- all_data %>%
   filter(total_confirmed>10) %>%
@@ -56,12 +73,91 @@ prep_data <- all_data %>%
   arrange(country_name, subregion1_name, subregion2_name, locality_name,  day) %>%
   group_by(country_name, subregion1_name, subregion2_name, locality_name) %>%
   mutate(inc_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA, na.rm = T)/population,
+         inc_30_day = roll_sum(s_new_confirmed, n=30, align="right", fill=NA, na.rm = T)/population,
          case_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA, na.rm = T),
          test_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA) / roll_sum(s_new_tested, n=14, align="right", fill=NA)) %>%
   as.data.table()
 
 
-prep_data
+function_shift_cor <- function(x, country, min_cases){
+  
+  # Get states
+  if (country!="global"){
+    states <- prep_data %>% filter(country_name==country & subregion1_name!="" & subregion2_name=="" & locality_name=="") %>%
+      distinct(subregion1_name) %>% pull(subregion1_name)
+  }
+  
+  x <- x %>%
+    filter(country_name==country & subregion1_name!="" & subregion2_name=="" & locality_name=="") %>%
+    filter(total_confirmed > min_cases) %>%
+    mutate(pos_rate = s_new_confirmed/s_new_tested)
+  
+  main_table <- data.table()
+  for (i in 1:22){
+    print(i)
+    i_table <- x %>%
+      group_by(key, subregion1_name) %>%
+      mutate(s = shift(pos_rate, n = i, fill=NA)) %>%
+      summarise(cor_day = cor(s, s_new_deceased, use="pairwise.complete.obs")) %>%
+      as.data.table() %>% mutate(d_shift=i)
+    
+    main_table <- rbind(main_table, i_table)
+  }
+  
+  return(main_table)  
+}
+
+us_pos_death_shift <- function_shift_cor(prep_data, country = "US", min_cases = 20000)
+
+us_pos_death_shift %>%
+  ggplot(aes(d_shift, subregion1_name, fill=cor_day)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "seagreen3", mid = "khaki1", high="firebrick3", midpoint = 0)
+
+us_pos_death_shift %>%
+  group_by(subregion1_name) %>%
+  mutate(count_na = sum(is.na(cor_day))) %>%
+  filter(count_na <6) %>% 
+  as.data.table() %>% 
+  ggplot(aes(factor(d_shift), cor_day)) +
+  geom_boxplot()
+
+us_pos_death_shift %>%
+  merge(prep_data %>% 
+          distinct(key, population, population_male, population_density, human_development_index,
+                   smoking_prevalence, diabetes_prevalence, comorbidity_mortality_rate, health_expenditure),
+        by=c("key")
+        ) %>%
+  merge(all_demo_age, by="key") %>%
+  mutate(pop_male = population_male/population) %>%
+  
+  group_by(subregion1_name) %>%
+  mutate(count_na = sum(is.na(cor_day))) %>%
+  filter(count_na <6) %>% 
+  group_by(subregion1_name) %>%
+  summarise(max_day = d_shift[which.max(cor_day)], max_cor=max(cor_day, na.rm = T),
+            pop_young, pop_mid, pop_old, pop_male) %>% 
+  distinct(.) %>%
+  as.data.table() %>%
+  
+  # Plot
+  ggplot(aes(max_day, max_cor, label=subregion1_name, color=pop_old)) +
+  geom_point(size=3) +
+  geom_text_repel() + 
+  scale_color_gradient2(low = "seagreen3", mid = "khaki1", high="firebrick3", midpoint = 0.25) +
+  theme_dark()
+  
+
+prep_data %>%
+  filter(subregion1_name=="California" & subregion2_name=="" & locality_name=="") %>%
+  filter(total_confirmed>5000) %>%
+  mutate(pos_rate = s_new_confirmed/s_new_tested) %>%
+  ggplot(aes(x=day)) + 
+    geom_line(aes(y=pos_rate, color="pos_rate")) +
+    geom_line(aes(y=s_new_deceased, color="deaths")) +
+    scale_y_log10()
+
+
 function_plot_std <- function(x, x_target, today){
   
   x <- merge(x, x_target, by=c("country_name", "subregion1_name", "subregion2_name", "locality_name")) %>%
@@ -71,11 +167,12 @@ function_plot_std <- function(x, x_target, today){
     # Get latest incidence value to sort facets by
     arrange(country_name, subregion1_name, subregion2_name, locality_name, day) %>%
     group_by(country_name, subregion1_name, subregion2_name, locality_name) %>%
-    mutate(latest_value = last(inc_14_day)) %>%
+    mutate(latest_value = last(inc_30_day)) %>%
+    filter(!is.na(latest_value)) %>%
     as.data.table()
   
-  # PLOT
-  p <- x %>%
+  # PLOTS
+  std_plot <- x %>%
     mutate(label = reorder(label, -latest_value)) %>%
     
     ggplot(aes(x=day, y=std_confirmed, fill=std_confirmed)) +
@@ -89,8 +186,38 @@ function_plot_std <- function(x, x_target, today){
           axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
     scale_fill_gradient2(low = "seagreen3", mid = "khaki1", high="firebrick3", midpoint = 0.5)
   
-  return(p)
+  inc_loli_plot <- x %>%
+    distinct(label, latest_value, population) %>%
+    mutate(label = reorder(label, latest_value)) %>%
+    mutate(latest_value = latest_value*12*100) %>%
+    
+    ggplot(aes(label, latest_value, label=round(latest_value,1))) +
+    geom_point(stat='identity', color="firebrick3", aes(size=population))  +
+    geom_segment(aes(y = 0, 
+                     x = label, 
+                     yend = latest_value, 
+                     xend = label), 
+                 color = "black") +
+    geom_text(color="white", size=4) +
+    coord_flip() +
+    theme_minimal() + ylab("Annualized Incidence") + #ylab("14-Day Incidence in 1M") +
+    theme(axis.text.x = element_text(size=12), axis.title.y = element_blank(),
+          axis.title.x = element_text(size=14), axis.text.y = element_text(size=12)) +
+    scale_size(range = c(8, 20))
+  
+  return(plot_grid(std_plot, inc_loli_plot))
 }
+
+function_extract_target_table <- function(x, country="Peru"){
+  
+  x <- x %>%
+    filter(country_name==country) %>%
+    distinct(country_name, subregion1_name, subregion2_name, subregion2_name, locality_name) %>%
+    filter(subregion2_name=="" & locality_name==""& subregion1_name!="")
+  
+  return(x)
+}
+
 
 target_table <- as.data.table(
   rbind(c("US", rep("",3)),
@@ -98,8 +225,10 @@ target_table <- as.data.table(
         c("Peru", rep("",3)),
         c("Spain", rep("",3)),
         c("US", "California", rep("",2)),
+        c("US", "Florida", rep("",2)),
+        c("US", "Arizona", rep("",2)),
         c("US", "New York", rep("",2)),
-        c("Peru", "Lima", rep("",2)),
+        c("Peru", "Lima Province", rep("",2)),
         c("Peru", "Arequipa", rep("",2))
   ),
 ) %>%
@@ -109,6 +238,7 @@ function_plot_std(prep_data, target_table,
                   today = "2020-07-19"
                   )
 
+function_plot_std(prep_data, function_extract_target_table(prep_data, "South Africa"), today = "2020-07-23") 
 
 function_plot_region <-  function(x, country, level_1="", level_2=""){
   
