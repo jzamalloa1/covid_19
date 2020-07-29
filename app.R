@@ -238,7 +238,74 @@ function_plot_std(prep_data, target_table,
                   today = "2020-07-19"
                   )
 
-function_plot_std(prep_data, function_extract_target_table(prep_data, "South Africa"), today = "2020-07-23") 
+function_plot_std(prep_data, function_extract_target_table(prep_data, "Peru"), today = "2020-07-23") 
+
+
+
+
+df <- read.csv("https://raw.githubusercontent.com/bcdunbar/datasets/master/parcoords_data.csv")
+
+fig <- df %>%
+  plot_ly(width = 1000, height = 600) 
+fig <- fig %>% add_trace(type = 'parcoords',
+                         line = list(color = ~colorVal,
+                                     colorscale = 'Jet',
+                                     showscale = TRUE,
+                                     reversescale = TRUE,
+                                     cmin = -4000,
+                                     cmax = -100),
+                         dimensions = list(
+                           list(range = c(~min(blockHeight),~max(blockHeight)),
+                                constraintrange = c(100000,150000),
+                                label = 'Block Height', values = ~blockHeight),
+                           list(range = c(~min(blockWidth),~max(blockWidth)),
+                                label = 'Block Width', values = ~blockWidth),
+                           list(tickvals = c(0,0.5,1,2,3),
+                                ticktext = c('A','AB','B','Y','Z'),
+                                label = 'Cyclinder Material', values = ~cycMaterial),
+                           list(range = c(-1,4),
+                                tickvals = c(0,1,2,3),
+                                label = 'Block Material', values = ~blockMaterial),
+                           list(range = c(~min(totalWeight),~max(totalWeight)),
+                                visible = TRUE,
+                                label = 'Total Weight', values = ~totalWeight),
+                           list(range = c(~min(assemblyPW),~max(assemblyPW)),
+                                label = 'Assembly Penalty Weight', values = ~assemblyPW),
+                           list(range = c(~min(HstW),~max(HstW)),
+                                label = 'Height st Width', values = ~HstW),
+                           list(range = c(~min(minHW),~max(minHW)),
+                                label = 'Min Height Width', values = ~minHW),
+                           list(range = c(~min(minWD),~max(minWD)),
+                                label = 'Min Width Diameter', values = ~minWD),
+                           list(range = c(~min(rfBlock),~max(rfBlock)),
+                                label = 'RF Block', values = ~rfBlock)
+                         )
+)
+
+
+fig
+
+
+fread("https://raw.githubusercontent.com/bcdunbar/datasets/master/iris.csv") %>% 
+  plot_ly(type = 'parcoords',
+    line = list(color = ~species_id,
+                colorscale = list(c(0,'red'),c(0.5,'green'),c(1,'blue'))),
+    dimensions = list(
+      list(range = c(2,4.5),
+           label = 'Sepal Width', values = ~sepal_width),
+      list(range = c(4,8),
+           constraintrange = c(5,6),
+           label = 'Sepal Length', values = ~sepal_length),
+      list(range = c(0,2.5),
+           label = 'Petal Width', values = ~petal_width),
+      list(range = c(1,7),
+           label = 'Petal Length', values = ~petal_length)
+    )
+)
+
+
+
+
 
 function_plot_region <-  function(x, country, level_1="", level_2=""){
   
