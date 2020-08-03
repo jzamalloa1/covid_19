@@ -18,7 +18,7 @@ library(gridExtra)
 library(cowplot)
 
 all_data <- fread("https://open-covid-19.github.io/data/v2/master.csv")
-
+                  
 all_data <- fread("https://storage.googleapis.com/covid19-open-data/v2/main.csv")
 all_epi  <- fread("https://storage.googleapis.com/covid19-open-data/v2/epidemiology.csv")
 all_hospi <- fread("https://storage.googleapis.com/covid19-open-data/v2/hospitalizations.csv") 
@@ -39,6 +39,13 @@ all_demo_age <- all_demo %>%
             pop_old = sum(c(population_age_60_69, population_age_70_79, population_age_80_89, population_age_90_99), na.rm = T)/population
             ) %>%
   as.data.table()
+
+all_data %>%
+  filter(country_name=="Brazil") %>%
+  filter(aggregation_level==0)
+
+all_epi %>%
+  filter(key=="US_CA")
 
 
 prep_data <- all_data %>%
@@ -77,6 +84,10 @@ prep_data <- all_data %>%
          case_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA, na.rm = T),
          test_14_day = roll_sum(s_new_confirmed, n=14, align="right", fill=NA) / roll_sum(s_new_tested, n=14, align="right", fill=NA)) %>%
   as.data.table()
+
+prep_data %>%
+  # distinct(country_name)
+  filter(country_name=="Peru" & subregion1_name=="" & subregion2_name=="" & locality_name=="")
 
 
 function_shift_cor <- function(x, country, min_cases){
@@ -167,7 +178,7 @@ function_plot_std <- function(x, x_target, today){
     # Get latest incidence value to sort facets by
     arrange(country_name, subregion1_name, subregion2_name, locality_name, day) %>%
     group_by(country_name, subregion1_name, subregion2_name, locality_name) %>%
-    mutate(latest_value = last(inc_30_day)) %>%
+    mutate(latest_value = last(inc_14_day)) %>%
     filter(!is.na(latest_value)) %>%
     as.data.table()
   
@@ -189,7 +200,7 @@ function_plot_std <- function(x, x_target, today){
   inc_loli_plot <- x %>%
     distinct(label, latest_value, population) %>%
     mutate(label = reorder(label, latest_value)) %>%
-    mutate(latest_value = latest_value*12*100) %>%
+    mutate(latest_value = latest_value*26) %>%
     
     ggplot(aes(label, latest_value, label=round(latest_value,1))) +
     geom_point(stat='identity', color="firebrick3", aes(size=population))  +
@@ -212,18 +223,24 @@ function_extract_target_table <- function(x, country="Peru"){
   
   x <- x %>%
     filter(country_name==country) %>%
-    distinct(country_name, subregion1_name, subregion2_name, subregion2_name, locality_name) %>%
-    filter(subregion2_name=="" & locality_name==""& subregion1_name!="")
+    distinct(country_name, subregion1_name, subregion2_name, locality_name) %>%
+    filter(subregion2_name=="" & locality_name=="" & subregion1_name!="")
   
   return(x)
 }
 
+prep_data %>% filter(country_name=="Peru") %>% 
+  filter(subregion1_name=="Lima Region")
+  
+function_extract_target_table(prep_data, "Peru")
 
 target_table <- as.data.table(
   rbind(c("US", rep("",3)),
         c("Italy", rep("",3)),
         c("Peru", rep("",3)),
         c("Spain", rep("",3)),
+        c("France", rep("",3)),
+        c("United Kingdom", rep("",3)),
         c("US", "California", rep("",2)),
         c("US", "Florida", rep("",2)),
         c("US", "Arizona", rep("",2)),
@@ -235,14 +252,212 @@ target_table <- as.data.table(
   rename(country_name="V1", subregion1_name="V2", subregion2_name="V3", locality_name="V4")
 
 function_plot_std(prep_data, target_table,
-                  today = "2020-07-19"
+                  today = "2020-07-31"
                   )
 
-function_plot_std(prep_data, function_extract_target_table(prep_data, "Peru"), today = "2020-07-23") 
+function_plot_std(prep_data, function_extract_target_table(prep_data, "Brazil"), today = "2020-07-30") 
+
+function_country_inc_cor <- function(x, total_th=100, pop_size=5e6){
+  
+  x <- x %>%
+    # Only filter for countries
+    filter(subregion1_name=="" & subregion2_name=="" & locality_name=="") %>%
+    filter(population>=pop_size) %>%
+    distinct(country_name, day, total_confirmed, new_case_inc, new_death_inc) %>%
+    
+    # Minimum number of cum cases
+    group_by(country_name) %>%
+    mutate(max_cases = max(total_confirmed)) %>%
+    filter(max_cases >= total_th) %>%
+    select(-max_cases) %>%
+    
+    # Start at 100 cases
+    filter(total_confirmed>=500) %>% #filter(-total_confirmed) %>%
+    group_by(country_name) %>%
+    mutate(n_count = 1:length(day)) %>%
+    as.data.table()
+    
+  # Get combined case death matrix
+  case_matrix  <- x %>% acast(n_count~country_name, value.var = "new_case_inc", fill = NA)
+  death_matrix <- x %>% acast(n_count~country_name, value.var = "new_death_inc", fill = NA)
+  
+  x <- rbind(case_matrix,
+             death_matrix[,colnames(case_matrix)]
+             )
+  
+  # Obtain correlation
+  x_cor <- x %>%
+    cor(use = "pairwise.complete.obs", method = "pearson") %>%
+    melt() %>%
+    as.data.table() %>%
+    
+    # Clean up (remove NAs, no same country)
+    rename(country_1=Var1, country_2=Var2, corr=value) %>%
+    filter(country_1!=country_2) %>%
+    filter(!is.na(corr)) %>%
+    arrange(-corr)
+  
+  # Obtain k-means
+  x_kmeans <- case_matrix[complete.cases(case_matrix),]
+  x_kmeans <- kmeans(t(x_kmeans), centers = 8, iter.max = 100)
+  
+  return(list(cor=x_cor, k=x_kmeans))
+}
+
+country_cor <- function_country_inc_cor(prep_data, total_th = 1000, pop_size = 10e6)
+
+as.data.table(t(data.frame(t(country_cor$k$cluster))), keep.rownames = T) %>%
+  rename(country=rn, cluster=V1) %>%
+  arrange(cluster)
+
+
+country_cor$cor %>% filter(country_1=="US" & country_2=="United Kingdom")
+
+
+
+function_data_network <- function(x, node_attr){
+  require(tibble)
+  
+  # Make sure all are in node_attr
+  x <- x %>% 
+    filter(country_1 %in% unique(node_attr$label)) %>% 
+    filter(country_2 %in% unique(node_attr$label))
+  
+  # Remove duplicates
+  all_countries <- unique(x$country_1)
+  combinations  <- data.table(t(combn(all_countries, 2, simplify = T))) %>%
+    rename(country_1 = V1, country_2=V2)
+  
+  x <- merge(x, combinations, by=c("country_1", "country_2")) %>%
+    rename(weight=corr)
+  
+  # Convert to network object
+  sources <- x %>%
+    distinct(country_1) %>%
+    rename(label = country_1)
+  
+  destinations <- x %>%
+    distinct(country_2) %>%
+    rename(label = country_2)
+  
+  # Nodes
+  nodes <- full_join(sources, destinations, by = "label") %>% 
+    rowid_to_column("id")
+  
+  # Edges
+  edges <- x %>% 
+    left_join(nodes, by = c("country_1" = "label")) %>% 
+    rename(from = id)
+  
+  edges <- edges %>% 
+    left_join(nodes, by = c("country_2" = "label")) %>% 
+    rename(to = id)
+  
+  edges <- edges %>% select(from, to, weight)
+  
+  # Add additional node attributes
+  # nodes <- nodes %>% merge(node_attr, by="label")
+  print(nodes[1:5,])
+  # Create network
+  country_network <- network(edges, vertex.attr = nodes, matrix.type = "edgelist", ignore.eval = FALSE, 
+                             directed = F, loops = F, multiple = F)
+
+  return(country_network)
+}
+
+
+nodes_attr <- prep_data %>%
+  filter(subregion1_name=="" & subregion2_name=="" & locality_name=="") %>%
+  distinct(label=country_name, population, human_development_index)
+
+country_cor_net <- function_data_network(country_cor$cor %>% filter(corr>0.2), 
+                                         node_attr = nodes_attr)
+
+country_cor_net
+summary(country_cor_net)
+
+plot(country_cor_net)
+
+# install.packages("ggnewscale")
+library(ggnewscale)
+p <- ggplot(ggnetwork(country_cor_net, weights="weight") %>%
+              as.data.table() %>%
+              merge(nodes_attr, by="label"),
+       aes(x = x, y = y, xend = xend, yend = yend, label=label, alpha=factor(weight))) +
+  geom_edges() + 
+  # scale_colour_gradient2(low = "white", mid = "skyblue", high="blue", midpoint = 0.6) +
+  # scale_colour_gradient(low = "white", high="darkgrey") +
+  # new_scale_colour() +
+  geom_nodes(aes(colour=human_development_index,size=population)) +
+  scale_colour_gradient2(low = "seagreen3", mid = "khaki1", high="firebrick3", midpoint = 0.7) +
+  scale_size(range = c(5, 15)) +
+  theme_blank()
+  
+  
+
+ggplotly(p)
+
+
+install.packages("ggnetwork")
+library(ggnetwork)
+library(ITNr)
+library(intergraph)
+library(network)
+library(igraph)
+library(sna)
 
 
 
 
+install.packages("networkD3")
+library(networkD3)
+country_cor_net <- graph.data.frame(country_cor %>% filter(corr>0.3), directed = F)
+
+
+
+
+# Basic Graph
+library(randomNames)
+random_name_df  <- function(nl=100, size=1000, smpl=10, seed=221){
+  df = data.frame(source = randomNames(size,which.names='both', name.order = 'first.last', name.sep=' '), target = '')
+  df = df[rep(seq_len(nrow(df)), sample(1:smpl,nrow(df), replace=T)),]
+  df = df[sample(nrow(df),nl),] 
+  df$target = sample(df$source,nrow(df), replace = T)
+  df = df[df[,1]!=df[,2], ] 
+  return(df)
+}
+
+df <- random_name_df(seed=221)
+g <- graph.data.frame(df, directed=F) # raw graph
+
+## Make a vertices df
+vertices<-data.frame(
+  name = V(g)$name,
+  group = edge.betweenness.community(g)$membership
+  # betweenness = (betweenness(g,directed=F,normalized=T)*115)+0.1 #so size isn't tiny
+) 
+#nb. can also adjust nodesize with `radiusCalculation`
+
+# create indices (indexing needs to be JS format)
+df$source.index = match(df$source, vertices$name)-1
+df$target.index = match(df$target, vertices$name)-1
+
+df$weight <- c(sample(seq(0.1, 0.3, 0.001), nrow(df)/2), sample(seq(0.8, 1.0, 0.001), (nrow(df)/2)+1))
+
+df
+d3 = forceNetwork(Links = df, Nodes = vertices, Value = "weight",
+                  Source = 'source.index', Target = 'target.index',
+                  NodeID = 'name',
+                  Group = 'group', # color nodes by group calculated earlier
+                  # charge = -50, # node repulsion
+                  linkDistance = 20,
+                  zoom = T, 
+                  opacity = 1,
+                  fontSize=24)
+
+show(d3)
+
+#####
 df <- read.csv("https://raw.githubusercontent.com/bcdunbar/datasets/master/parcoords_data.csv")
 
 fig <- df %>%
